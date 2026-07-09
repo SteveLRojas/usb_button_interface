@@ -68,6 +68,7 @@ void write_key_map(void)
 
 int main(void)
 {
+	UINT8 tkey_time = 0;
 	UINT8 dev_mode = 0;
 	UINT8 prev_tkey_state;
 	
@@ -90,7 +91,7 @@ int main(void)
 	gpio_set_mode(GPIO_MODE_PP, GPIO_PORT_3, GPIO_PIN_2);
 	
 	timer_init(TIMER_0, NULL);
-	timer_set_period(TIMER_0, FREQ_SYS / 1000ul);	//period is 1ms
+	timer_set_period(TIMER_0, 4ul * FREQ_SYS / 1000ul);	//period is 4ms
 	timer_init(TIMER_1, NULL);
 	timer_set_period(TIMER_1, FREQ_SYS / 1000ul);	//period is 1ms
 	EA = 1;	//enable interupts
@@ -131,6 +132,21 @@ int main(void)
 	
 	while(TRUE)
 	{
+		//Update timers
+		if(timer_overflow_counts[TIMER_0])	//HINT: timer interval is 4ms
+		{
+			++tkey_time;
+			++hid_kb_idle_time;
+			timer_overflow_counts[TIMER_0] = 0;
+		}
+		
+		//Update touck key state
+		if(tkey_time >= 32)
+		{
+			tkey_run_schedule(1);
+			tkey_time = 0;
+		}
+		
 		//Handle mode switching
 		if(tkey_results[0] && !prev_tkey_state)
 		{
@@ -152,18 +168,6 @@ int main(void)
 			}
 		}
 		prev_tkey_state = tkey_results[0];
-		
-		//Update touck key state
-		if(!(timer_overflow_counts[TIMER_0] & 0x007F))
-		{
-			tkey_run_schedule(1);
-		}
-		
-		//Update HID KB idle timer
-		if(!(timer_overflow_counts[TIMER_0] & 0x0003))
-		{
-			++hid_kb_idle_time;
-		}
 		
 		if(dev_mode && cdc_config)	//programming mode
 		{
@@ -247,6 +251,7 @@ int main(void)
 						break;
 					case 0x0E:
 						datagram[0] = flash_read_byte(flash_idx);
+						++flash_idx;
 						break;
 				}
 				
@@ -266,6 +271,7 @@ int main(void)
 		else if(!dev_mode && hid_kb_config)	//functional mode
 		{
 			temp = 0x01;
+			sw_state = 0;
 			if(gpio_read_pin(GPIO_PORT_1, GPIO_PIN_1))	//SW0
 				sw_state |= temp;
 			temp <<= 1;
