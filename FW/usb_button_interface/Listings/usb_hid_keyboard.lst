@@ -1,0 +1,584 @@
+C51 COMPILER V9.60.0.0   USB_HID_KEYBOARD                                                  06/28/2026 15:27:13 PAGE 1   
+
+
+C51 COMPILER V9.60.0.0, COMPILATION OF MODULE USB_HID_KEYBOARD
+OBJECT MODULE PLACED IN .\Objects\usb_hid_keyboard.obj
+COMPILER INVOKED BY: C:\Keil_v5\C51\BIN\C51.exe usb_hid_keyboard.c LARGE OMF2 OPTIMIZE(8,SPEED) BROWSE DEBUG PRINT(.\Lis
+                    -tings\usb_hid_keyboard.lst) OBJECT(.\Objects\usb_hid_keyboard.obj)
+
+line level    source
+
+   1          #include "CH552.H"
+   2          #include "CH552_USB.h"
+   3          #include "usb_hid_keyboard.h"
+   4          
+   5          #define HID_DEV_DESCR_SIZE 18
+   6          #define HID_CONF_DESCR_SIZE 34
+   7          #define HID_REPORT_DESCR_SIZE 65
+   8          #define HID_KB_REPORT_SIZE 8
+   9          
+  10          UINT8 xdata hid_ep0_buf[HID_ENDP0_BUF_SIZE];
+  11          UINT8 xdata hid_ep1_buf[HID_ENDP1_BUF_SIZE];
+  12          
+  13          #define hid_setup_buf ((PUSB_SETUP_REQ)hid_ep0_buf)
+  14          
+  15          UINT8 hid_setup_req;
+  16          UINT8 hid_setup_type;
+  17          UINT16 hid_setup_len;
+  18          
+  19          UINT8 code* hid_descriptor_ptr;
+  20          UINT8 hid_kb_address;
+  21          UINT8 hid_kb_config;
+  22          
+  23          volatile UINT8 hid_kb_report_pending;
+  24          volatile UINT8 hid_kb_idle_rate;
+  25          volatile UINT8 hid_kb_indicators;
+  26          UINT8 hid_kb_protocol;
+  27          
+  28          /* USB Device Descriptors */
+  29          UINT8 code hid_device_descriptor[] =
+  30          { 
+  31              HID_DEV_DESCR_SIZE,                         // bLength
+  32              0x01,                           // bDescriptorType
+  33              0x10, 0x01,                     // bcdUSB
+  34              0x00,                           // bDeviceClass
+  35              0x00,                           // bDeviceSubClass
+  36              0x00,                           // bDeviceProtocol
+  37              HID_ENDP0_SIZE,                                     // bMaxPacketSize0
+  38              0x86, 0x1A,                     // idVendor
+  39              0x0C, 0xFE,                     // idProduct
+  40              0x00, 0x01,                     // bcdDevice
+  41              0x01,                           // iManufacturer
+  42              0x02,                           // iProduct
+  43              0x03,                           // iSerialNumber
+  44              0x01,                           // bNumConfigurations
+  45          };
+  46          
+  47          /* USB Configration Descriptors */
+  48          UINT8 code hid_config_descriptor[] =
+  49          { 
+  50              /* Configuration Descriptor */
+  51              0x09,                           // bLength
+  52              0x02,                           // bDescriptorType
+  53              HID_CONF_DESCR_SIZE & 0xFF, HID_CONF_DESCR_SIZE >> 8, // wTotalLength
+  54              0x01,                           // bNumInterfaces
+C51 COMPILER V9.60.0.0   USB_HID_KEYBOARD                                                  06/28/2026 15:27:13 PAGE 2   
+
+  55              0x01,                           // bConfigurationValue
+  56              0x00,                           // iConfiguration
+  57              0x80,                           // bmAttributes: bus powered, no wakeup
+  58              0x32,                           // MaxPower: 100mA
+  59          
+  60              /* Interface Descriptor (Keyboard) */
+  61              0x09,                           // bLength
+  62              0x04,                           // bDescriptorType
+  63              0x00,                           // bInterfaceNumber
+  64              0x00,                           // bAlternateSetting
+  65              0x01,                           // bNumEndpoints
+  66              0x03,                           // bInterfaceClass
+  67              0x01,                           // bInterfaceSubClass
+  68              0x01,                           // bInterfaceProtocol: Keyboard
+  69              0x04,                           // iInterface
+  70          
+  71              /* HID Descriptor (Keyboard) */
+  72              0x09,                           // bLength
+  73              0x21,                           // bDescriptorType
+  74              0x10, 0x01,                     // bcdHID
+  75              0x00,                           // bCountryCode
+  76              0x01,                           // bNumDescriptors
+  77              0x22,                           // bDescriptorType
+  78              HID_REPORT_DESCR_SIZE & 0xFF, HID_REPORT_DESCR_SIZE >> 8, // wDescriptorLength
+  79          
+  80              /* Endpoint Descriptor (Keyboard) */
+  81              0x07,                           // bLength
+  82              0x05,                           // bDescriptorType
+  83              0x81,                           // bEndpointAddress: IN Endpoint 1
+  84              0x03,                           // bmAttributes
+  85              HID_ENDP1_SIZE & 0xFF, HID_ENDP1_SIZE >> 8, // wMaxPacketSize
+  86              0x01                            // bInterval: 1mS
+  87          };
+  88          
+  89          /* HID Report Descriptor */
+  90          UINT8 code hid_report_descriptor[] =
+  91          {
+  92              0x05, 0x01,                     // Usage Page (Generic Desktop)
+  93              0x09, 0x06,                     // Usage (Keyboard)
+  94              0xA1, 0x01,                     // Collection (Application)
+  95                  0x05, 0x07,                     // Usage Page (Keyboard/keypad)
+  96                  0x19, 0xE0,                                             // Usage Minimum (Keyboard LeftControl)
+  97                  0x29, 0xE7,                     // Usage Maximum (Keyboard Right GUI)
+  98              0x15, 0x00,                     // Logical Minimum (0)
+  99              0x25, 0x01,                     // Logical Maximum (1)
+ 100                  0x75, 0x01,                     // Report Size (1)
+ 101              0x95, 0x08,                     // Report Count (8)
+ 102                  0x81, 0x02,                     // Input (Data, Variable, Absolute)
+ 103                  0x75, 0x08,                     // Report Size (8)
+ 104              0x95, 0x01,                     // Report Count (1)
+ 105                  0x81, 0x01,                     // Input (Constant, Array, Absolute)
+ 106                  0x75, 0x01,                     // Report Size (1)
+ 107              0x95, 0x05,                     // Report Count (5)
+ 108                  0x05, 0x08,                     // Usage Page (LED)
+ 109                  0x19, 0x01,                                             // Usage Minimum (Num Lock)
+ 110                  0x29, 0x05,                     // Usage Maximum (Kana)
+ 111                  0x91, 0x02,                     // Output (Data, Variable, Absolute)
+ 112                  0x75, 0x03,                     // Report Size (3)
+ 113              0x95, 0x01,                     // Report Count (1)
+ 114                  0x91, 0x01,                     // Output (Constant, Array, Absolute)
+ 115                  0x75, 0x08,                     // Report Size (8)
+ 116              0x95, 0x06,                     // Report Count (6)
+C51 COMPILER V9.60.0.0   USB_HID_KEYBOARD                                                  06/28/2026 15:27:13 PAGE 3   
+
+ 117                  0x15, 0x00,                     // Logical Minimum (0)
+ 118              0x26, 0xFF, 0x00,               // Logical Maximum (255)
+ 119                  0x05, 0x07,                     // Usage Page (Keyboard/Keypad)
+ 120                  0x19, 0x00,                     // Usage Minimum (Reserved)
+ 121              0x2A, 0xFF, 0x00,               // Usage Maximum (Reserved)
+ 122                  0x81, 0x00,                     // Input (Data, Array, Absolute)
+ 123              0xC0                            // End Collection
+ 124          };
+ 125          
+ 126          /* USB String Descriptors */
+ 127          UINT8 code hid_string_lang_id[] =
+ 128          {
+ 129                  0x04,
+ 130                  0x03,
+ 131                  0x09,
+ 132                  0x04 
+ 133          };
+ 134          
+ 135          /* USB Device String Vendor */
+ 136          UINT8 code hid_string_vendor[] =
+ 137          {
+ 138                  14,    
+ 139                  0x03,           
+ 140                  'w',0,'c',0,'h',0,'.',0,'c',0,'n',0
+ 141          };
+ 142          
+ 143          /* USB Device String Product */
+ 144          UINT8 code hid_string_product[] =
+ 145          {
+ 146              26,
+ 147              0x03,
+ 148              'U', 0, 'S', 0, 'B', 0, ' ', 0, 'K', 0, 'e', 0, 'y', 0, 'b', 0, 'o', 0, 'a', 0, 'r', 0, 'd', 0
+ 149          };
+ 150          
+ 151          /* USB Serial String Descriptor */
+ 152          UINT8 code hid_string_serial[] =
+ 153          {
+ 154                  22,          
+ 155                  0x03,                   
+ 156                  'D', 0, 'E', 0, 'A', 0, 'D', 0, 'B', 0, 'E', 0 , 'E', 0, 'F', 0, '0', 0, '7', 0
+ 157          };
+ 158          
+ 159          void hid_kb_copy_descriptor(UINT8 len)
+ 160          {
+ 161   1              UINT8* dest = hid_ep0_buf;
+ 162   1              while(len)
+ 163   1              {
+ 164   2                      *dest = *hid_descriptor_ptr;
+ 165   2                      ++dest;
+ 166   2                      ++hid_descriptor_ptr;
+ 167   2                      --len;
+ 168   2              }
+ 169   1      }
+ 170          
+ 171          void hid_kb_on_out(UINT8 ep)
+ 172          {
+ 173   1              if(ep == EP_0)
+ 174   1              {
+ 175   2                      if((hid_setup_req == HID_SET_REPORT) && ((hid_setup_type & USB_REQ_TYP_MASK) == USB_REQ_TYP_CLASS))
+ 176   2                              hid_kb_indicators = hid_ep0_buf[0];
+ 177   2                      
+ 178   2                      usb_set_ep0_tx_len(0);
+C51 COMPILER V9.60.0.0   USB_HID_KEYBOARD                                                  06/28/2026 15:27:13 PAGE 4   
+
+ 179   2                      usb_set_ep0_tog_res(EP_OUT_TOG_1 | EP_IN_TOG_1 | USB_OUT_RES_ACK | USB_IN_RES_EXPECT_ACK);
+ 180   2              }
+ 181   1      }
+ 182          
+ 183          void hid_kb_on_in(UINT8 ep)
+ 184          {
+ 185   1              UINT8 len;
+ 186   1              
+ 187   1              if(ep == EP_0)
+ 188   1              {
+ 189   2                      if((hid_setup_type & USB_REQ_TYP_MASK) == USB_REQ_TYP_STANDARD)
+ 190   2                      {
+ 191   3                              switch(hid_setup_req)
+ 192   3                              {
+ 193   4                                      case USB_GET_DESCRIPTOR:
+ 194   4                                              len = hid_setup_len >= HID_ENDP0_SIZE ? HID_ENDP0_SIZE : hid_setup_len;
+ 195   4                                              hid_kb_copy_descriptor(len);
+ 196   4                                              hid_setup_len -= len;
+ 197   4                                              usb_set_ep0_tx_len(len);
+ 198   4                                              usb_toggle_ep0_in_toggle();
+ 199   4                                              break;
+ 200   4                                      case USB_SET_ADDRESS:
+ 201   4                                              usb_set_addr(hid_kb_address);
+ 202   4                                              usb_set_ep0_in_res(USB_IN_RES_NAK);
+ 203   4                                              break;
+ 204   4                                      default:
+ 205   4                                              usb_set_ep0_tx_len(0);
+ 206   4                                              usb_set_ep0_in_res(USB_IN_RES_NAK);
+ 207   4                                              break;
+ 208   4                              }
+ 209   3                      }
+ 210   2                      else
+ 211   2                      {
+ 212   3                              usb_set_ep0_tx_len(0);
+ 213   3                              usb_set_ep0_in_res(USB_IN_RES_NAK);
+ 214   3                      }
+ 215   2              }
+ 216   1              
+ 217   1              if(ep == EP_1)
+ 218   1              {
+ 219   2                      usb_set_ep1_tx_len(0);
+ 220   2                      usb_set_ep1_in_res(USB_IN_RES_NAK);
+ 221   2                      hid_kb_report_pending = 0;
+ 222   2              }
+ 223   1      }
+ 224          
+ 225          void hid_kb_on_setup(UINT8 ep)
+ 226          {
+ 227   1              UINT8 len;
+ 228   1              UINT8 idx;
+ 229   1              
+ 230   1              if(ep == EP_0)
+ 231   1              {
+ 232   2                      hid_setup_len = ((UINT16)hid_setup_buf->wLengthH<<8) | (hid_setup_buf->wLengthL);
+ 233   2                      hid_setup_req = hid_setup_buf->bRequest;
+ 234   2                      hid_setup_type = hid_setup_buf->bRequestType;
+ 235   2                      hid_descriptor_ptr = (UINT8 code*)NULL;
+ 236   2                      len = 0;
+ 237   2                      
+ 238   2                      if((hid_setup_type & USB_REQ_TYP_MASK) == USB_REQ_TYP_STANDARD)
+ 239   2                      {
+ 240   3                              switch(hid_setup_req)
+C51 COMPILER V9.60.0.0   USB_HID_KEYBOARD                                                  06/28/2026 15:27:13 PAGE 5   
+
+ 241   3                              {
+ 242   4                                      case USB_GET_STATUS:
+ 243   4                                              hid_ep0_buf[0] = 0x00;
+ 244   4                                              hid_ep0_buf[1] = 0x00;
+ 245   4                                              len = 2;
+ 246   4                                              break;
+ 247   4                                      case USB_CLEAR_FEATURE:
+ 248   4                                              if((hid_setup_type & USB_REQ_RECIP_MASK) == USB_REQ_RECIP_ENDP)
+ 249   4                                              {
+ 250   5                                                      switch(hid_setup_buf->wIndexL)
+ 251   5                                                      {
+ 252   6                                                              case 0x01:
+ 253   6                                                                      usb_set_ep1_out_toggle(EP_OUT_TOG_0);
+ 254   6                                                                      usb_set_ep1_out_res(USB_OUT_RES_ACK);
+ 255   6                                                                      break;
+ 256   6                                                              case 0x81:
+ 257   6                                                                      usb_set_ep1_in_toggle(EP_IN_TOG_0);
+ 258   6                                                                      usb_set_ep1_in_res(USB_IN_RES_NAK);
+ 259   6                                                                      break;
+ 260   6                                                              default:
+ 261   6                                                                      len = 0xFF;
+ 262   6                                                                      break;
+ 263   6                                                      }
+ 264   5                                              }
+ 265   4                                              else
+ 266   4                                              {
+ 267   5                                                      len = 0xFF;
+ 268   5                                              }
+ 269   4                                              break;
+ 270   4                                      case USB_SET_FEATURE:
+ 271   4                                              if(((hid_setup_type & USB_REQ_RECIP_MASK) == USB_REQ_RECIP_ENDP) && !hid_setup_buf->wIndexH)
+ 272   4                                              {
+ 273   5                                                      switch(hid_setup_buf->wIndexL)
+ 274   5                                                      {
+ 275   6                                                              case 0x01:
+ 276   6                                                                      usb_set_ep1_out_toggle(EP_OUT_TOG_0);
+ 277   6                                                                      usb_set_ep1_out_res(USB_OUT_RES_STALL);
+ 278   6                                                                      break;
+ 279   6                                                              case 0x81:
+ 280   6                                                                      usb_set_ep1_in_toggle(EP_IN_TOG_0);
+ 281   6                                                                      usb_set_ep1_in_res(USB_IN_RES_STALL);
+ 282   6                                                                      break;
+ 283   6                                                              default:
+ 284   6                                                                      len = 0xFF;
+ 285   6                                                                      break;
+ 286   6                                                      }
+ 287   5                                              }
+ 288   4                                              else
+ 289   4                                              {
+ 290   5                                                      len = 0xFF;
+ 291   5                                              }
+ 292   4                                              break;
+ 293   4                                      case USB_SET_ADDRESS:
+ 294   4                                              hid_kb_address = hid_setup_buf->wValueL;
+ 295   4                                              break;
+ 296   4                                      case USB_GET_DESCRIPTOR:
+ 297   4                                              switch(hid_setup_buf->wValueH)
+ 298   4                                              {
+ 299   5                                                      case USB_DESCR_TYP_DEVICE:
+ 300   5                                                              hid_descriptor_ptr = hid_device_descriptor;
+ 301   5                                                              len = HID_DEV_DESCR_SIZE;
+ 302   5                                                              break;
+C51 COMPILER V9.60.0.0   USB_HID_KEYBOARD                                                  06/28/2026 15:27:13 PAGE 6   
+
+ 303   5                                                      case USB_DESCR_TYP_CONFIG:
+ 304   5                                                              hid_descriptor_ptr = hid_config_descriptor;
+ 305   5                                                              len = HID_CONF_DESCR_SIZE;
+ 306   5                                                              break;
+ 307   5                                                      case USB_DESCR_TYP_STRING:
+ 308   5                                                              switch(hid_setup_buf->wValueL)
+ 309   5                                                              {
+ 310   6                                                                      case 0:
+ 311   6                                                                              hid_descriptor_ptr = hid_string_lang_id;
+ 312   6                                                                              break;
+ 313   6                                                                      case 1:
+ 314   6                                                                              hid_descriptor_ptr = hid_string_vendor;
+ 315   6                                                                              break;
+ 316   6                                                                      case 2:
+ 317   6                                                                              hid_descriptor_ptr = hid_string_product;
+ 318   6                                                                              break;
+ 319   6                                                                      case 3:
+ 320   6                                                                              hid_descriptor_ptr = hid_string_serial;
+ 321   6                                                                              break;
+ 322   6                                                                      case 4:
+ 323   6                                                                              hid_descriptor_ptr = hid_string_product;
+ 324   6                                                                              break;
+ 325   6                                                                      default:
+ 326   6                                                                              hid_descriptor_ptr = hid_string_serial;
+ 327   6                                                                              break;
+ 328   6                                                              }
+ 329   5                                                              len = hid_descriptor_ptr[0];
+ 330   5                                                              break;
+ 331   5                                                      case USB_DESCR_TYP_REPORT:
+ 332   5                                                              if(hid_setup_buf->wValueL == 0)
+ 333   5                                                              {
+ 334   6                                                                      hid_descriptor_ptr = hid_report_descriptor;
+ 335   6                                                                      len = HID_REPORT_DESCR_SIZE;
+ 336   6                                                              }
+ 337   5                                                              else
+ 338   5                                                                      len = 0xFF;
+ 339   5                                                              break;
+ 340   5                                                      default:
+ 341   5                                                              len = 0xFF;
+ 342   5                                                              break;
+ 343   5                                              }
+ 344   4                                              break;
+ 345   4                                      case USB_GET_CONFIGURATION:
+ 346   4                                              hid_ep0_buf[0] = hid_kb_config;
+ 347   4                                              len = 1;
+ 348   4                                              break;
+ 349   4                                      case USB_SET_CONFIGURATION:
+ 350   4                                              hid_kb_config = hid_setup_buf->wValueL;
+ 351   4                                              break;
+ 352   4                                      case USB_GET_INTERFACE:
+ 353   4                                              hid_ep0_buf[0] = 0;
+ 354   4                                              len = 1;
+ 355   4                                              break;
+ 356   4                                      case USB_SET_INTERFACE:
+ 357   4                                              //nothing to do here
+ 358   4                                              break;
+ 359   4                                      default:
+ 360   4                                              len = 0xFF;
+ 361   4                                              break;
+ 362   4                              }
+ 363   3                      }
+ 364   2                      else if((hid_setup_type & USB_REQ_TYP_MASK) == USB_REQ_TYP_CLASS)
+C51 COMPILER V9.60.0.0   USB_HID_KEYBOARD                                                  06/28/2026 15:27:13 PAGE 7   
+
+ 365   2                      {
+ 366   3                              switch(hid_setup_req)
+ 367   3                              {
+ 368   4                                      case HID_GET_REPORT:
+ 369   4                                              for(idx = 0; idx < HID_KB_REPORT_SIZE; ++idx)
+ 370   4                                              {
+ 371   5                                                      hid_ep0_buf[idx] = hid_ep1_buf[idx];    //the report does not have its own buffer, it stays in ep1
+ 372   5                                              }
+ 373   4                                              len = HID_KB_REPORT_SIZE;
+ 374   4                                              break;
+ 375   4                                      case HID_GET_IDLE:
+ 376   4                                              hid_ep0_buf[0] = hid_kb_idle_rate;
+ 377   4                                              len = 1;
+ 378   4                                              break;
+ 379   4                                      case HID_GET_PROTOCOL:
+ 380   4                                              hid_ep0_buf[0] = hid_kb_protocol;
+ 381   4                                              len = 1;
+ 382   4                                              break;
+ 383   4                                      case HID_SET_REPORT:
+ 384   4                                              //nothing to do here
+ 385   4                                              break;
+ 386   4                                      case HID_SET_IDLE:
+ 387   4                                              hid_kb_idle_rate = hid_setup_buf->wValueH;
+ 388   4                                              break;
+ 389   4                                      case HID_SET_PROTOCOL:
+ 390   4                                              hid_kb_protocol = hid_setup_buf->wValueL;
+ 391   4                                              break;
+ 392   4                                      default:
+ 393   4                                              len = 0xFF;
+ 394   4                                              break;
+ 395   4                              }
+ 396   3                      }
+ 397   2                      else
+ 398   2                      {
+ 399   3                              len = 0xFF;
+ 400   3                      }       // end  if((hid_setup_type & USB_REQ_TYP_MASK) == USB_REQ_TYP_STANDARD)
+ 401   2                      
+ 402   2                      if(len == 0xFF)
+ 403   2                      {
+ 404   3                              hid_setup_req = 0xFF;
+ 405   3                              usb_set_ep0_tog_res(EP_OUT_TOG_1 | EP_IN_TOG_1 | USB_OUT_RES_STALL | USB_IN_RES_STALL);
+ 406   3                      }
+ 407   2                      else
+ 408   2                      {
+ 409   3                              if(hid_setup_len > len)
+ 410   3                                      hid_setup_len = len;
+ 411   3                              len = (hid_setup_len > HID_ENDP0_SIZE) ? HID_ENDP0_SIZE : hid_setup_len;
+ 412   3                              
+ 413   3                              if(hid_descriptor_ptr != (UINT8 code*)NULL)
+ 414   3                                      hid_kb_copy_descriptor(len);
+ 415   3                              
+ 416   3                              hid_setup_len -= len;
+ 417   3                              usb_set_ep0_tx_len(len);
+ 418   3                              usb_set_ep0_tog_res(EP_OUT_TOG_1 | EP_IN_TOG_1 | USB_OUT_RES_ACK | USB_IN_RES_EXPECT_ACK);
+ 419   3                      }
+ 420   2              }       // end if(ep == EP_0)
+ 421   1      }
+ 422          
+ 423          void hid_kb_on_rst(void)
+ 424          {
+ 425   1              UINT8 idx;
+ 426   1              usb_set_ep0_tog_res(USB_OUT_RES_ACK | USB_IN_RES_NAK | EP_OUT_TOG_0 | EP_IN_TOG_0 | EP_AUTOTOG_0);
+C51 COMPILER V9.60.0.0   USB_HID_KEYBOARD                                                  06/28/2026 15:27:13 PAGE 8   
+
+ 427   1              usb_set_ep1_tog_res(USB_OUT_RES_ACK | USB_IN_RES_NAK | EP_OUT_TOG_0 | EP_IN_TOG_0 | EP_AUTOTOG_1);
+ 428   1              
+ 429   1              for(idx = 0; idx < HID_KB_REPORT_SIZE; ++idx)
+ 430   1              {
+ 431   2                      hid_ep1_buf[idx] = 0x00;
+ 432   2              }
+ 433   1              hid_kb_report_pending = 0;
+ 434   1              hid_kb_idle_rate = 0;
+ 435   1              hid_kb_protocol = 0x01; //default to report protocol
+ 436   1              hid_kb_config = 0;
+ 437   1              hid_kb_indicators = 0;
+ 438   1      }
+ 439          
+ 440          usb_config_t code usb_kb_config = 
+ 441          {
+ 442                  (UINT16)hid_ep0_buf,
+ 443                  (UINT16)hid_ep1_buf,
+ 444                  0x0000,
+ 445                  0x0000,
+ 446                  USB_OUT_RES_ACK | USB_IN_RES_NAK | EP_OUT_TOG_0 | EP_IN_TOG_0 | EP_AUTOTOG_0,
+ 447                  USB_OUT_RES_ACK | USB_IN_RES_NAK | EP_OUT_TOG_0 | EP_IN_TOG_0 | EP_AUTOTOG_1,
+ 448                  USB_OUT_RES_ACK | USB_IN_RES_NAK | EP_OUT_TOG_0 | EP_IN_TOG_0 | EP_AUTOTOG_0,
+ 449                  USB_OUT_RES_ACK | USB_IN_RES_NAK | EP_OUT_TOG_0 | EP_IN_TOG_0 | EP_AUTOTOG_0,
+ 450                  USB_OUT_RES_ACK | USB_IN_RES_NAK | EP_OUT_TOG_0 | EP_IN_TOG_0 | EP_AUTOTOG_0,
+ 451                  USB_EP1_TX_EN | USB_EP1_BUF_SINGLE,
+ 452                  USB_EP2_BUF_SINGLE | USB_EP3_BUF_SINGLE,
+ 453                  USB_INT_TRANSFER | USB_INT_RST
+ 454          };
+ 455          
+ 456          void hid_kb_init(void)
+ 457          {
+ 458   1              usb_sof_callback = NULL;
+ 459   1              usb_out_callback = hid_kb_on_out;
+ 460   1              usb_in_callback = hid_kb_on_in;
+ 461   1              usb_setup_callback = hid_kb_on_setup;
+ 462   1              usb_rst_callback = hid_kb_on_rst;
+ 463   1              usb_suspend_callback = NULL;
+ 464   1              
+ 465   1              usb_init(&usb_kb_config);
+ 466   1      }
+ 467          
+ 468          void hid_kb_send_report(void)
+ 469          {
+ 470   1              hid_kb_report_pending = 1;
+ 471   1              usb_set_ep1_tx_len(HID_KB_REPORT_SIZE);
+ 472   1              usb_set_ep1_in_res(USB_IN_RES_EXPECT_ACK);
+ 473   1      }
+ 474          
+ 475          void hid_kb_press_modifier(UINT8 modifiers)
+ 476          {
+ 477   1              hid_ep1_buf[0] |= modifiers;
+ 478   1              hid_kb_send_report();
+ 479   1      }
+ 480          
+ 481          void hid_kb_release_modifier(UINT8 modifiers)
+ 482          {
+ 483   1              hid_ep1_buf[0] &= ~modifiers;
+ 484   1              hid_kb_send_report();
+ 485   1      }
+ 486          
+ 487          void hid_kb_press_key(UINT8 key)
+ 488          {
+C51 COMPILER V9.60.0.0   USB_HID_KEYBOARD                                                  06/28/2026 15:27:13 PAGE 9   
+
+ 489   1              UINT8 idx;
+ 490   1              
+ 491   1              for(idx = 2; idx < HID_KB_REPORT_SIZE; ++idx)
+ 492   1              {
+ 493   2                      if(hid_ep1_buf[idx] == key)
+ 494   2                              return; //key is already pressed
+ 495   2              }
+ 496   1              
+ 497   1              for(idx = 2; idx < HID_KB_REPORT_SIZE; ++idx)
+ 498   1              {
+ 499   2                      if(!hid_ep1_buf[idx])
+ 500   2                      {
+ 501   3                              hid_ep1_buf[idx] = key;
+ 502   3                              hid_kb_send_report();
+ 503   3                              return;
+ 504   3                      }
+ 505   2              }
+ 506   1              
+ 507   1              for(idx = 2; idx < HID_KB_REPORT_SIZE; ++idx)
+ 508   1              {
+ 509   2                      hid_ep1_buf[idx] = 0x00;
+ 510   2              }
+ 511   1              hid_ep1_buf[2] = HID_KB_KEY_ROLL_OVER;
+ 512   1              hid_kb_send_report();
+ 513   1      }
+ 514          
+ 515          void hid_kb_release_key(UINT8 key)
+ 516          {
+ 517   1              UINT8 idx;
+ 518   1              
+ 519   1              for(idx = 2; idx < HID_KB_REPORT_SIZE; ++idx)
+ 520   1              {
+ 521   2                      if(hid_ep1_buf[idx] == key)
+ 522   2                      {
+ 523   3                              hid_ep1_buf[idx] = 0x00;
+ 524   3                              hid_kb_send_report();
+ 525   3                              return;
+ 526   3                      }
+ 527   2              }
+ 528   1      }
+ 529          
+ 530          void hid_kb_release_all_keys(void)
+ 531          {
+ 532   1              UINT8 idx;
+ 533   1              
+ 534   1              for(idx = 0; idx < HID_KB_REPORT_SIZE; ++idx)
+ 535   1              {
+ 536   2                      hid_ep1_buf[idx] = 0x00;
+ 537   2              }
+ 538   1      }
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =   1289    ----
+   CONSTANT SIZE    =    199    ----
+   XDATA SIZE       =     32       3
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =   ----    ----
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =   ----    ----
+   EDATA SIZE       =   ----    ----
+   HDATA SIZE       =   ----    ----
+C51 COMPILER V9.60.0.0   USB_HID_KEYBOARD                                                  06/28/2026 15:27:13 PAGE 10  
+
+   XDATA CONST SIZE =   ----    ----
+   FAR CONST SIZE   =   ----    ----
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)
