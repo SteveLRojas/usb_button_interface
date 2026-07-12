@@ -8,6 +8,8 @@
 #include "CH552_USB_HID_KB.h"
 #include "CH552_TIMER.h"
 
+#define DEBOUNCE_SAMPLES 200
+
 //Pins:
 // SW0 = P11
 // TKEY = P14
@@ -82,7 +84,9 @@ int main(void)
 	
 	UINT8 hid_kb_idle_time = 0;
 	UINT8 sw_state;
-	UINT8 prev_sw_state = 0;
+	UINT8 sw_count[6];
+	UINT8 sw_debounced = 0;
+	UINT8 prev_sw_debounced = 0;
 	
 	rcc_set_clk_freq(RCC_CLK_FREQ_24M);
 	
@@ -128,7 +132,15 @@ int main(void)
 	hid_kb_init();
 	
 	if(key_map.len != 8)
-		prev_sw_state = 0xFF;
+	{
+		sw_debounced = 0xFF;
+		prev_sw_debounced = 0xFF;
+	}
+	
+	for(map_idx = 0; map_idx < 6; ++map_idx)
+	{
+		sw_count[map_idx] = 0;
+	}
 	
 	while(TRUE)
 	{
@@ -292,7 +304,23 @@ int main(void)
 			
 			sw_state ^= key_map.sw_pol;
 			
-			temp = sw_state & ~prev_sw_state;
+			temp = 0x01;
+			for(map_idx = 0; map_idx < 6; ++map_idx)
+			{	
+				if(sw_state & temp)
+					sw_count[map_idx] += (sw_count[map_idx] <= DEBOUNCE_SAMPLES);
+				else
+					sw_count[map_idx] -= (sw_count[map_idx] != 0);
+				
+				if(!sw_count[map_idx])
+					sw_debounced &= ~temp;
+				if(sw_count[map_idx] == DEBOUNCE_SAMPLES)
+					sw_debounced |= temp;
+				
+				temp <<= 1;
+			}
+			
+			temp = sw_debounced & ~prev_sw_debounced;
 			for(map_idx = 0; map_idx < 6; ++map_idx)
 			{
 				if(temp & 0x01)
@@ -300,7 +328,7 @@ int main(void)
 				temp >>= 1;
 			}
 			
-			temp = prev_sw_state & ~sw_state;
+			temp = prev_sw_debounced & ~sw_debounced;
 			for(map_idx = 0; map_idx < 6; ++map_idx)
 			{
 				if(temp & 0x01)
@@ -308,7 +336,7 @@ int main(void)
 				temp >>= 1;
 			}
 			
-			prev_sw_state = sw_state;
+			prev_sw_debounced = sw_debounced;
 			
 			if(hid_kb_idle_rate && (hid_kb_idle_time >= hid_kb_idle_rate))
 			{
