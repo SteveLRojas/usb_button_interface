@@ -116,7 +116,7 @@ int main(void)
 	tkey_schedule_len = 1;
 	tkey_init_schedule();
 	tkey_calibrate();
-	tkey_threshold = 0x28;
+	tkey_threshold = 0x200;
 	tkey_run_schedule(1);
 	while(tkey_pending_samples);
 	prev_tkey_state = tkey_results[0];
